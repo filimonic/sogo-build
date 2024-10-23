@@ -1,0 +1,41 @@
+name: Keep actions running by commits
+run-name: Keep actions running by commits
+permissions:
+  contents: write
+  pull-requests: write
+on:
+  schedule:
+    # At 00:55, 1st day of every month
+    - cron: 55 0 1 * *
+  workflow_dispatch:
+jobs:
+  commit_to_repository_to_keep_actions_running:
+    name: Commit to keep actions running
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: ⬇️ Check out ${{ github.repository }}
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository }}
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Create local changes
+        shell: bash
+        run: |
+          date --universal '+%Y-%m-%dT%H:%M:%S%z' > ./.actions-keep-alive
+          git add ./.actions-keep-alive
+      - name: Commit changes
+        run: |
+          git config --local user.email "github-actions-keepalive[bot]@users.noreply.github.com"
+          git config --local user.name  "github-actions-keepalive[bot]"
+          git commit -a -m "update keepalive"
+      - name: Push changes
+        uses: ad-m/github-push-action@master
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          branch: ${{ github.ref }}
+
+        

@@ -1,0 +1,178 @@
+name: Build latest SOGo for Debian bookworm (amd64)
+run-name: Build latest SOGo for Debian bookworm (amd64)
+permissions:
+  contents: write
+on:
+  schedule:
+    #Every day at 15:30 UTC
+    - cron: 30  15  *  *  *
+  workflow_dispatch:
+
+env:
+  SOGO_REPO_NAME: ${{ vars.SOGO_REPO }}
+  SOPE_REPO_NAME: ${{ vars.SOPE_REPO }}
+  TARGET_REPO_NAME: ${{ github.repository }}
+
+jobs:
+  delete_runs_where_build_cancelled:
+    name: Delete cancelled workflow runs.
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+      contents: read
+    steps:
+      - name: Delete cancelled  workflow runs.
+        uses: Mattraks/delete-workflow-runs@v2
+        with:
+          retain_days: 14
+          keep_minimum_runs: 6
+          token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          delete_run_by_conclusion_pattern: >-
+            ${{ 'cancelled' }}
+
+  check_build_need:
+    needs: delete_runs_where_build_cancelled
+    name: "❔Check if new build needed"
+    runs-on: ubuntu-20.04
+    steps:
+      - name: 🌐 Get latest SOGo (${{ env.SOGO_REPO_NAME }}) release tag
+        run: |
+          echo "sogo_release_tag=$(curl -s https://api.github.com/repos/$SOGO_REPO_NAME/releases/latest | jq '.tag_name' | sed 's/\"//g' )" >> "$GITHUB_ENV"
+      - name: 💥 Fail on empty sogo_release_tag
+        if: ${{ env.sogo_release_tag == '' || env.sogo_release_tag == null }}
+        run: |
+          echo "::error ::sogo_release_tag is EMPTY"
+          exit 1
+      - name: 🌐 Get SOGo release version
+        run: |
+          echo "sogo_release_version=$( echo $sogo_release_tag | awk -F '-' '{ print $2 }' )" >> "$GITHUB_ENV"
+      - name: 💥 Fail on empty sogo_release_version
+        if: ${{ env.sogo_release_version == '' || env.sogo_release_version == null }}
+        run: |
+          echo "::error ::sogo_release_version is EMPTY"
+          exit 1
+      - name: 🌐 Get latest target(${{ env.TARGET_REPO_NAME }}) release tag
+        run: |
+          echo "target_release_tag=$(curl -s https://api.github.com/repos/$TARGET_REPO_NAME/releases/latest | jq '.tag_name' | sed 's/\"//g')" >> "$GITHUB_ENV"
+      - name: ⚖️Compare source and target release tags
+        run: |
+          echo "need_build=${{ ((env.target_release_tag == '')  || (env.target_release_tag == 'null') || (env.target_release_tag != env.sogo_release_tag)) && 'TRUE' || 'FALSE' }}" >> "$GITHUB_ENV"
+      - name: ⬆️Export variables
+        id: export_vars
+        run: |
+          echo "need_build=$need_build" >> "$GITHUB_OUTPUT"
+          echo "sogo_release_tag=$sogo_release_tag" >> "$GITHUB_OUTPUT"
+          echo "release_version=$sogo_release_version" >> "$GITHUB_OUTPUT"
+    outputs:
+      need_build: ${{ steps.export_vars.outputs.need_build }}
+      release_version: ${{ steps.export_vars.outputs.release_version }}
+
+  cancel_if_no_need_build: 
+    name: "Cancel workflow if no need to build"
+    needs: check_build_need
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+    if: ${{ needs.check_build_need.outputs.need_build != 'TRUE' }}
+    steps:
+      - name: Cancel workflow
+        uses: action-pack/cancel@v1
+      - name: wait for run cancellation
+        shell: bash
+        run: |
+          while true; do echo "Waiting for job to be cancelled"; sleep 5; done
+
+  build_bookworm_amd64_repo:
+    name: "⚙️ Create Debian Bookworm (amd64) repo"
+    needs: check_build_need
+    runs-on: ubuntu-20.04
+    env:
+      DEBIAN_DISTRO: "bookworm"
+      DEBIAN_ARCH: "amd64"
+      DEBIAN_FRONTEND: "noninteractive"
+      APT_GET_COMMON_FLAGS: "--no-install-recommends --no-install-suggests --quiet=2 --assume-yes --allow-change-held-packages --allow-downgrades -o=Dpkg::Use-Pty=0"
+      RELEASE_VER: ${{ needs.check_build_need.outputs.release_version }}
+    if: ${{ needs.check_build_need.outputs.need_build == 'TRUE' }}
+    steps:
+      - name: ⏫ Update APT repos
+        run: |
+          sudo apt-get update $APT_GET_COMMON_FLAGS
+      - name: 🛠️ Install debootstrap
+        run: |
+          sudo apt-get install $APT_GET_COMMON_FLAGS \
+            debootstrap
+      - name: ⬇️ Check out SOPE release ${{ needs.check_build_need.outputs.release_version }}
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.SOPE_REPO_NAME }}
+          ref: "SOPE-${{ needs.check_build_need.outputs.release_version }}"
+          lfs: true
+          submodules: true
+          path: ./${{env.DEBIAN_DISTRO}}-${{env.DEBIAN_ARCH}}-chroot/w/SOPE
+      - name: ⬇️ Check out SOGo release ${{ needs.check_build_need.outputs.release_version }}
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.SOGO_REPO_NAME }}
+          ref: "SOGo-${{ needs.check_build_need.outputs.release_version }}"
+          lfs: true
+          submodules: true
+          path: ./${{env.DEBIAN_DISTRO}}-${{env.DEBIAN_ARCH}}-chroot/w/SOGo
+      - name: ⬇️ Check out build scripts from ${{ github.repository }}
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository }}
+          lfs: true
+          submodules: true
+          path: ./${{env.DEBIAN_DISTRO}}-${{env.DEBIAN_ARCH}}-chroot/w/build
+      - name: ⬇️ Setup debian environment
+        run: |
+          sudo debootstrap \
+            --variant=minbase \
+            --arch=${{env.DEBIAN_ARCH}} \
+            ${{env.DEBIAN_DISTRO}} \
+            ./${{env.DEBIAN_DISTRO}}-${{env.DEBIAN_ARCH}}-chroot \
+            http://deb.debian.org/debian > /dev/null
+      - name: 🔧 Install prerequisites
+        run: |
+          sudo chroot --userspec=root:root ./${{env.DEBIAN_DISTRO}}-${{env.DEBIAN_ARCH}}-chroot /bin/bash /w/build/build-${{env.DEBIAN_DISTRO}}-${{env.DEBIAN_ARCH}}.sh install-prerequisites
+      - name: ⚒️ Build SOPE
+        run: |
+          sudo chroot --userspec=root:root ./${{env.DEBIAN_DISTRO}}-${{env.DEBIAN_ARCH}}-chroot /bin/bash /w/build/build-${{env.DEBIAN_DISTRO}}-${{env.DEBIAN_ARCH}}.sh build-sope "${{ env.RELEASE_VER }}"
+      - name: ⚒️ Install SOPE libraries
+        run: |
+          sudo chroot --userspec=root:root ./${{env.DEBIAN_DISTRO}}-${{env.DEBIAN_ARCH}}-chroot /bin/bash /w/build/build-${{env.DEBIAN_DISTRO}}-${{env.DEBIAN_ARCH}}.sh install-sope
+      - name: ⚒️ Build SOGo
+        run: |
+          sudo chroot --userspec=root:root ./${{env.DEBIAN_DISTRO}}-${{env.DEBIAN_ARCH}}-chroot /bin/bash /w/build/build-${{env.DEBIAN_DISTRO}}-${{env.DEBIAN_ARCH}}.sh build-sogo "${{ env.RELEASE_VER }}"
+      - name: 🔧 Create repo
+        run: |
+          sudo chroot --userspec=root:root ./${{env.DEBIAN_DISTRO}}-${{env.DEBIAN_ARCH}}-chroot /bin/bash /w/build/build-${{env.DEBIAN_DISTRO}}-${{env.DEBIAN_ARCH}}.sh create-repo
+      - name: 🗜️ Pack repo to archive
+        working-directory: ./${{env.DEBIAN_DISTRO}}-${{env.DEBIAN_ARCH}}-chroot/w/repo
+        run: |
+          GZIP=-9 tar --owner=0 --group=0 --verbose --gzip --create --recursion \
+            --file="../SOGo-${{ env.RELEASE_VER }}_${{env.DEBIAN_DISTRO}}-${{env.DEBIAN_ARCH}}.tar.gz" .
+      - name: 🚀 Create release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        uses: softprops/action-gh-release@v1
+        with:
+          name: "SOGo-${{ env.RELEASE_VER }}_${{env.DEBIAN_DISTRO}}-${{env.DEBIAN_ARCH}}"
+          tag_name: "SOGO-${{ env.RELEASE_VER }}"
+          draft: false
+          prerelease: false
+          files: |
+            ./${{env.DEBIAN_DISTRO}}-${{env.DEBIAN_ARCH}}-chroot/w/SOGo-${{ env.RELEASE_VER }}_${{env.DEBIAN_DISTRO}}-${{env.DEBIAN_ARCH}}.tar.gz
+          body: |
+            SOGo-${{ env.RELEASE_VER }}_${{env.DEBIAN_DISTRO}}-${{env.DEBIAN_ARCH}}.tar.gz
+            Build for Debian ${{env.DEBIAN_DISTRO}} (${{env.DEBIAN_ARCH}})
+
+            This is automated build and provided AS-IS.
+
+            Source repositories used:
+              * [${{ vars.SOGO_REPO }}, tag SOGo-${{env.RELEASE_VER}}](https://github.com/Alinto/sogo/releases/tag/SOGo-${{env.RELEASE_VER}})
+              * [${{ vars.SOPE_REPO }}, tag SOPE-${{env.RELEASE_VER}}](https://github.com/Alinto/sope/releases/tag/SOPE-${{env.RELEASE_VER}})
+
+          fail_on_unmatched_files: true
+          generate_release_notes: false
