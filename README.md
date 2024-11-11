@@ -5,7 +5,7 @@ repo and install SOGo with `apt-get` instead of `dpkg` dependency hell.
 
 ## Download
 
-You will find latest `SOGo-*_bookworm-amd64.tar.gz` on [Releases](https://github.com/filimonic/sogo-bookworm-build/releases) page.
+You will find latest `SOGo-*_bookworm-amd64.tar.gz` on [Releases](https://github.com/filimonic/sogo-build/releases) page.
 
 ## Instructions
 
