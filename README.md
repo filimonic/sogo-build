@@ -20,6 +20,9 @@ rm --recursive --force /opt/SOGo-repo/*
 tar --extract --file ./SOGo-5.11.2_bookworm-amd64.tar.gz --directory /opt/SOGo-repo
 echo "deb [trusted=yes] file:/opt/SOGo-repo /" > /etc/apt/sources.list.d/sogo-local-repo.list
 
+### Update repo info
+apt update
+
 ### Install sogo and SQL lib
 apt install sogo sope4.9-gdl1-postgresql sope4.9-gdl1-mysql 
 
